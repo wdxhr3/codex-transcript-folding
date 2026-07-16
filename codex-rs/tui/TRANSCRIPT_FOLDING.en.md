@@ -6,7 +6,9 @@
 
 This change adds UI-only transcript folding to Codex CLI:
 
-- individually fold any completed user or assistant message;
+- individually fold any completed user message;
+- fold a completed assistant response together with the tool calls and other
+  execution activity associated with that response;
 - fold all user and assistant messages;
 - expand all messages;
 - persist fold state per Codex task/thread;
@@ -40,8 +42,10 @@ Example state:
 ```
 
 The ordinal is the message's order among messages of the same kind within the
-task. Tool output, status cards, and reasoning cells are neither numbered nor
-folded. Files are written atomically.
+task. User messages remain independent. All assistant output and committed
+activity after one user message and before the next user message shares one
+assistant ordinal. Tool cells cannot be selected independently, but are folded
+when their assistant response is folded. Files are written atomically.
 
 ## 3. Why selection happens in `Ctrl+T`
 
@@ -77,9 +81,16 @@ Codex owns and renders continuously.
 | `Shift+F`       | Expand all messages                           |
 | `q` or `Ctrl+T` | Close and repaint the normal interface        |
 
-A streamed assistant response may occupy several internal cells. It is treated
-as one message and produces only one `▶ Assistant message collapsed`
-placeholder.
+A streamed assistant response may occupy several internal cells and may contain
+web searches, commands, patches, MCP calls, or other activity. The complete
+response is represented by one summary such as:
+
+```text
+▶ Assistant response collapsed · 3 tool calls · 12 lines · 684 chars · 1 related item
+```
+
+Nothing is auto-hidden. Calls are folded only after the user folds their
+assistant response.
 
 ## 5. Build and run
 
@@ -133,14 +144,18 @@ After the first build:
 
 1. Open `Ctrl+T` again and select a completed assistant response.
 2. Press `Space`.
-3. Expect exactly one `▶ Assistant message collapsed`, even if the original
+3. Expect exactly one `▶ Assistant response collapsed ...` summary, even if the
    response arrived through several streamed cells.
-4. Press `q` and confirm the normal interface matches.
+4. For a response that used web search, commands, patches, or MCP tools, confirm
+   those associated cells are hidden too.
+5. Expand the response and confirm both its text and associated activity return.
+6. Press `q` and confirm the normal interface matches.
 
 ### C. Fold all and expand all
 
-1. Open `Ctrl+T`, press lowercase `f`, and expect all user/assistant messages to
-   become placeholders. Tool and status cells remain visible.
+1. Open `Ctrl+T`, press lowercase `f`, and expect all user messages and assistant
+   responses to become placeholders. Activity associated with each assistant
+   response is folded with it.
 2. Close and confirm the normal interface matches.
 3. Reopen, press `Shift+F`, and expect every original message to return.
 4. Close and confirm the normal interface is expanded too.
@@ -175,6 +190,8 @@ After the first build:
 
 - Only completed history can be folded; an active streaming cell cannot be
   selected.
+- Tool calls are not independently selectable and are never hidden
+  automatically. They follow the folded state of their assistant response.
 - Rebuilding managed history may produce a small flicker and may reset terminal
   text selection or scroll position.
 - Fold state is independent of rollout data; copying only a rollout file does

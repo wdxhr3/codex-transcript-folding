@@ -18,6 +18,10 @@ impl UnifiedExecInteractionCell {
 }
 
 impl HistoryCell for UnifiedExecInteractionCell {
+    fn transcript_tool_call_count(&self) -> usize {
+        1
+    }
+
     fn display_lines(&self, width: u16) -> Vec<Line<'static>> {
         if width == 0 {
             return Vec::new();

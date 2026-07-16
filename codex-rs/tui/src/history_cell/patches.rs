@@ -10,6 +10,10 @@ pub(crate) struct PatchHistoryCell {
 }
 
 impl HistoryCell for PatchHistoryCell {
+    fn transcript_tool_call_count(&self) -> usize {
+        1
+    }
+
     fn display_lines(&self, width: u16) -> Vec<Line<'static>> {
         create_diff_summary(&self.changes, &self.cwd, width as usize)
     }

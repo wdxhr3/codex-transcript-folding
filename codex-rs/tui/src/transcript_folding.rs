@@ -45,12 +45,44 @@ impl TranscriptMessageKind {
 ///
 /// The rollout protocol does not expose item ids on TUI history cells. The
 /// message kind and its ordinal among messages of that kind are stable when a
-/// session is replayed, while excluding tool and status cells that may be
-/// consolidated differently during rendering.
+/// session is replayed. Non-user cells between two user messages share the
+/// assistant response id when that span contains assistant output.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 pub(crate) struct TranscriptMessageId {
     pub(crate) kind: TranscriptMessageKind,
     pub(crate) ordinal: usize,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct TranscriptFoldSummary {
+    kind: TranscriptMessageKind,
+    text_lines: usize,
+    text_chars: usize,
+    tool_calls: usize,
+    related_items: usize,
+}
+
+impl TranscriptFoldSummary {
+    pub(crate) fn label(&self) -> String {
+        let noun = match self.kind {
+            TranscriptMessageKind::User => "User message",
+            TranscriptMessageKind::Assistant => "Assistant response",
+        };
+        let mut details = Vec::new();
+        if self.tool_calls > 0 {
+            details.push(counted(self.tool_calls, "tool call", "tool calls"));
+        }
+        details.push(counted(self.text_lines, "line", "lines"));
+        details.push(counted(self.text_chars, "char", "chars"));
+        if self.related_items > 0 {
+            details.push(counted(self.related_items, "related item", "related items"));
+        }
+        format!("▶ {noun} collapsed · {}", details.join(" · "))
+    }
+}
+
+fn counted(count: usize, singular: &str, plural: &str) -> String {
+    format!("{count} {}", if count == 1 { singular } else { plural })
 }
 
 #[derive(Clone, Debug, Default, Deserialize, PartialEq, Eq, Serialize)]
@@ -106,41 +138,45 @@ impl TranscriptFoldState {
 }
 
 pub(crate) fn message_ids(cells: &[Arc<dyn HistoryCell>]) -> Vec<Option<TranscriptMessageId>> {
+    let mut ids = vec![None; cells.len()];
     let mut user_ordinal: usize = 0;
     let mut assistant_ordinal: usize = 0;
-    let mut previous_was_assistant = false;
-    cells
-        .iter()
-        .map(|cell| {
-            if cell.as_any().is::<UserHistoryCell>() {
-                previous_was_assistant = false;
-                let message = TranscriptMessageId {
-                    kind: TranscriptMessageKind::User,
-                    ordinal: user_ordinal,
-                };
-                user_ordinal += 1;
-                Some(message)
-            } else if cell.as_any().is::<AgentMessageCell>()
-                || cell.as_any().is::<AgentMarkdownCell>()
-            {
-                let ordinal = if previous_was_assistant {
-                    assistant_ordinal.saturating_sub(1)
-                } else {
-                    previous_was_assistant = true;
-                    let ordinal = assistant_ordinal;
-                    assistant_ordinal += 1;
-                    ordinal
-                };
-                Some(TranscriptMessageId {
-                    kind: TranscriptMessageKind::Assistant,
-                    ordinal,
-                })
-            } else {
-                previous_was_assistant = false;
-                None
-            }
-        })
-        .collect()
+    let mut index = 0;
+    while index < cells.len() {
+        if !cells[index].as_any().is::<UserHistoryCell>() {
+            index += 1;
+            continue;
+        }
+
+        ids[index] = Some(TranscriptMessageId {
+            kind: TranscriptMessageKind::User,
+            ordinal: user_ordinal,
+        });
+        user_ordinal += 1;
+
+        let response_start = index + 1;
+        let mut response_end = response_start;
+        while response_end < cells.len() && !cells[response_end].as_any().is::<UserHistoryCell>() {
+            response_end += 1;
+        }
+        if cells[response_start..response_end]
+            .iter()
+            .any(|cell| is_assistant_message_cell(cell.as_ref()))
+        {
+            let response = TranscriptMessageId {
+                kind: TranscriptMessageKind::Assistant,
+                ordinal: assistant_ordinal,
+            };
+            assistant_ordinal += 1;
+            ids[response_start..response_end].fill(Some(response));
+        }
+        index = response_end;
+    }
+    ids
+}
+
+fn is_assistant_message_cell(cell: &dyn HistoryCell) -> bool {
+    cell.as_any().is::<AgentMessageCell>() || cell.as_any().is::<AgentMarkdownCell>()
 }
 
 pub(crate) fn is_message_start(message_ids: &[Option<TranscriptMessageId>], index: usize) -> bool {
@@ -150,13 +186,86 @@ pub(crate) fn is_message_start(message_ids: &[Option<TranscriptMessageId>], inde
     index == 0 || message_ids[index - 1] != Some(message)
 }
 
+pub(crate) fn is_selectable_message_start(
+    cells: &[Arc<dyn HistoryCell>],
+    message_ids: &[Option<TranscriptMessageId>],
+    index: usize,
+) -> bool {
+    let Some(message) = message_ids.get(index).copied().flatten() else {
+        return false;
+    };
+    let is_matching_message_cell = match message.kind {
+        TranscriptMessageKind::User => cells[index].as_any().is::<UserHistoryCell>(),
+        TranscriptMessageKind::Assistant => is_assistant_message_cell(cells[index].as_ref()),
+    };
+    is_matching_message_cell
+        && !(0..index).any(|earlier| {
+            message_ids[earlier] == Some(message)
+                && match message.kind {
+                    TranscriptMessageKind::User => cells[earlier].as_any().is::<UserHistoryCell>(),
+                    TranscriptMessageKind::Assistant => {
+                        is_assistant_message_cell(cells[earlier].as_ref())
+                    }
+                }
+        })
+}
+
+pub(crate) fn message_summaries(
+    cells: &[Arc<dyn HistoryCell>],
+    message_ids: &[Option<TranscriptMessageId>],
+) -> Vec<Option<TranscriptFoldSummary>> {
+    let mut summaries = vec![None; cells.len()];
+    for (index, message) in message_ids.iter().copied().enumerate() {
+        let Some(message) = message else {
+            continue;
+        };
+        if !is_message_start(message_ids, index) {
+            continue;
+        }
+
+        let mut summary = TranscriptFoldSummary {
+            kind: message.kind,
+            text_lines: 0,
+            text_chars: 0,
+            tool_calls: 0,
+            related_items: 0,
+        };
+        for (cell, cell_message) in cells.iter().zip(message_ids) {
+            if *cell_message != Some(message) {
+                continue;
+            }
+            let is_message_cell = match message.kind {
+                TranscriptMessageKind::User => cell.as_any().is::<UserHistoryCell>(),
+                TranscriptMessageKind::Assistant => is_assistant_message_cell(cell.as_ref()),
+            };
+            if is_message_cell {
+                let lines = cell.raw_lines();
+                summary.text_lines += lines.len();
+                summary.text_chars += lines
+                    .iter()
+                    .map(|line| line.to_string().chars().count())
+                    .sum::<usize>();
+            } else {
+                let tool_calls = cell.transcript_tool_call_count();
+                summary.tool_calls += tool_calls;
+                if tool_calls == 0 {
+                    summary.related_items += 1;
+                }
+            }
+        }
+        summaries[index] = Some(summary);
+    }
+    summaries
+}
+
 /// Return the normal-view replacement for a folded message cell.
 ///
-/// A streamed assistant response may occupy several contiguous history cells.
-/// All of those cells share one message id, so only the first cell emits the
+/// An assistant response may occupy several message and activity cells. All of
+/// those cells share one message id, so only the first cell emits the summary
 /// placeholder and the remaining cells disappear from the rendered transcript.
 pub(crate) fn folded_message_lines(
     message_ids: &[Option<TranscriptMessageId>],
+    message_summaries: &[Option<TranscriptFoldSummary>],
     fold_state: &TranscriptFoldState,
     index: usize,
 ) -> Option<Vec<HyperlinkLine>> {
@@ -167,9 +276,12 @@ pub(crate) fn folded_message_lines(
     if !is_message_start(message_ids, index) {
         return Some(Vec::new());
     }
-    Some(vec![HyperlinkLine::new(
-        Line::from(format!("▶ {} message collapsed", message.kind.label())).dim(),
-    )])
+    let label = message_summaries
+        .get(index)
+        .and_then(Option::as_ref)
+        .map(TranscriptFoldSummary::label)
+        .unwrap_or_else(|| format!("▶ {} message collapsed", message.kind.label()));
+    Some(vec![HyperlinkLine::new(Line::from(label).dim())])
 }
 
 impl App {
@@ -294,15 +406,63 @@ mod tests {
             kind: TranscriptMessageKind::Assistant,
             ordinal: 0,
         };
+        let cells: Vec<Arc<dyn HistoryCell>> = vec![
+            Arc::new(AgentMessageCell::new(vec![Line::from("part one")], true)),
+            Arc::new(AgentMessageCell::new(vec![Line::from("part two")], false)),
+        ];
         let ids = vec![Some(message), Some(message)];
+        let summaries = message_summaries(&cells, &ids);
         let mut state = TranscriptFoldState::default();
         state.toggle(message);
 
-        let first = folded_message_lines(&ids, &state, 0).expect("folded first cell");
-        let continuation = folded_message_lines(&ids, &state, 1).expect("folded continuation");
+        let first = folded_message_lines(&ids, &summaries, &state, 0).expect("folded first cell");
+        let continuation =
+            folded_message_lines(&ids, &summaries, &state, 1).expect("folded continuation");
 
         assert_eq!(first.len(), 1);
-        assert_eq!(first[0].line.to_string(), "▶ Assistant message collapsed");
+        assert_eq!(
+            first[0].line.to_string(),
+            "▶ Assistant response collapsed · 2 lines · 16 chars"
+        );
         assert!(continuation.is_empty());
+    }
+
+    #[test]
+    fn assigns_tool_activity_to_the_surrounding_assistant_response() {
+        let cells: Vec<Arc<dyn HistoryCell>> = vec![
+            user_cell("look this up"),
+            Arc::new(AgentMessageCell::new(
+                vec![Line::from("I will search")],
+                false,
+            )),
+            Arc::new(crate::history_cell::new_web_search_call(
+                "call-1".to_string(),
+                "Codex".to_string(),
+                codex_app_server_protocol::WebSearchAction::Other,
+            )),
+            Arc::new(AgentMarkdownCell::new(
+                "final answer".to_string(),
+                Path::new("/tmp"),
+            )),
+        ];
+        let ids = message_ids(&cells);
+        let assistant = TranscriptMessageId {
+            kind: TranscriptMessageKind::Assistant,
+            ordinal: 0,
+        };
+
+        assert_eq!(
+            ids[1..],
+            [Some(assistant), Some(assistant), Some(assistant)]
+        );
+        assert!(is_selectable_message_start(&cells, &ids, 1));
+        assert!(!is_selectable_message_start(&cells, &ids, 2));
+        assert!(!is_selectable_message_start(&cells, &ids, 3));
+
+        let summaries = message_summaries(&cells, &ids);
+        assert_eq!(
+            summaries[1].as_ref().map(TranscriptFoldSummary::label),
+            Some("▶ Assistant response collapsed · 1 tool call · 2 lines · 25 chars".to_string())
+        );
     }
 }

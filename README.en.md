@@ -11,8 +11,10 @@ UI-only transcript organization feature. It is based on upstream Codex commit
 The fork adds the following behavior without changing agent semantics:
 
 - fold or expand any completed user message;
-- fold or expand any completed assistant message;
-- treat a streamed assistant response as one message and one placeholder;
+- fold or expand any completed assistant response together with its associated
+  tool calls and execution activity;
+- treat all assistant output between two user messages as one response and one
+  placeholder;
 - fold all user and assistant messages in the current task;
 - expand all messages in the current task;
 - persist fold state separately for each Codex task/thread;
@@ -41,9 +43,13 @@ Press `Ctrl+T` in the normal Codex CLI interface to open the managed transcript.
 Folded messages are replaced by one of these reversible placeholders:
 
 ```text
-▶ User message collapsed
-▶ Assistant message collapsed
+▶ User message collapsed · 1 line · 42 chars
+▶ Assistant response collapsed · 3 tool calls · 12 lines · 684 chars · 1 related item
 ```
+
+Tool calls are never hidden automatically. They disappear only when the user
+explicitly folds the assistant response they belong to, and return when that
+response is expanded.
 
 The normal interface uses native terminal scrollback, which does not retain an
 interactive component for every old message. Selection therefore happens in
@@ -133,10 +139,13 @@ build, targeted folding tests, and the complete `codex-tui` nextest suite:
    messages should be selected; tool and status cells should not be selected.
 5. Select a user message and press `Space`. Expect
    `▶ User message collapsed`.
-6. Select an assistant response and press `Space`. Expect exactly one
-   `▶ Assistant message collapsed`, even for a streamed multi-cell response.
-7. Press `q`. The normal inline interface should be rebuilt with the same two
-   placeholders while all other content remains visible.
+6. Ask for a task that performs a visible tool call, such as web search or a
+   terminal command. Select its assistant response and press `Space`. Expect
+   exactly one `▶ Assistant response collapsed ...` summary; the associated
+   tool call and command output should disappear with it.
+7. Expand the same response and confirm its text and associated activity both
+   return. Fold it again, then press `q`; the normal inline interface should be
+   rebuilt with the same placeholder.
 8. Open `Ctrl+T`, press `f`, and expect every user/assistant message to fold.
    Close the overlay and confirm the normal view matches.
 9. Reopen it, press `Shift+F`, and expect all original text to return in both
@@ -162,8 +171,10 @@ must remain intact.
 
 - Only completed user and assistant history can be selected. Active streaming
   output is not foldable.
-- Tool calls, command output, status cards, and reasoning cells are not in the
-  fold-all set.
+- Tool calls are not independently selectable and are never auto-hidden. They
+  are grouped with the assistant response between the surrounding user
+  messages, so folding that response—or using fold all—also folds its calls,
+  command output, and related execution activity.
 - Rebuilding terminal-managed history can cause a small flicker and may reset a
   terminal text selection or scroll position.
 - Fold state is stored separately from rollout JSONL. Copying only a rollout

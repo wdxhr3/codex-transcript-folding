@@ -4572,9 +4572,9 @@ async fn resize_reflow_replaces_folded_user_and_assistant_messages() {
     assert_eq!(
         rendered,
         vec![
-            "▶ User message collapsed".to_string(),
+            "▶ User message collapsed · 1 line · 34 chars".to_string(),
             String::new(),
-            "▶ Assistant message collapsed".to_string(),
+            "▶ Assistant response collapsed · 1 line · 39 chars".to_string(),
         ]
     );
 }

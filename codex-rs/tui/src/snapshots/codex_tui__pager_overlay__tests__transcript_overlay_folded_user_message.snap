@@ -3,7 +3,7 @@ source: tui/src/pager_overlay.rs
 expression: term.backend()
 ---
 "/ T R A N S C R I P T / / / / / / / / / / / / / / / / / / / / / / / / / / / / / "
-"▶ User message collapsed                                                        "
+"▶ User message collapsed · 1 line · 39 chars                                    "
 "~                                                                               "
 "~                                                                               "
 "~                                                                               "

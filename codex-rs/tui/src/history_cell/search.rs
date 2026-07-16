@@ -88,6 +88,10 @@ impl WebSearchCell {
 }
 
 impl HistoryCell for WebSearchCell {
+    fn transcript_tool_call_count(&self) -> usize {
+        1
+    }
+
     fn display_lines(&self, width: u16) -> Vec<Line<'static>> {
         let bullet = if self.completed {
             "•".dim()

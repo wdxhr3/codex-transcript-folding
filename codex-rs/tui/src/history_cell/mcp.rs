@@ -117,6 +117,10 @@ impl McpToolCallCell {
 }
 
 impl HistoryCell for McpToolCallCell {
+    fn transcript_tool_call_count(&self) -> usize {
+        1
+    }
+
     fn display_lines(&self, width: u16) -> Vec<Line<'static>> {
         let mut lines: Vec<Line<'static>> = Vec::new();
         let status = self.success();

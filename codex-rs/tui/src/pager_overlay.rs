@@ -33,10 +33,12 @@ use crate::terminal_hyperlinks::HyperlinkLine;
 use crate::terminal_hyperlinks::mark_buffer_hyperlinks;
 use crate::terminal_hyperlinks::visible_lines;
 use crate::transcript_folding::TranscriptFoldState;
+use crate::transcript_folding::TranscriptFoldSummary;
 use crate::transcript_folding::TranscriptMessageId;
-use crate::transcript_folding::TranscriptMessageKind;
 use crate::transcript_folding::is_message_start;
+use crate::transcript_folding::is_selectable_message_start;
 use crate::transcript_folding::message_ids;
+use crate::transcript_folding::message_summaries;
 use crate::tui;
 use crate::tui::TuiEvent;
 use crossterm::event::KeyCode;
@@ -420,20 +422,20 @@ struct CellRenderable {
 }
 
 struct FoldedMessageRenderable {
-    kind: TranscriptMessageKind,
+    label: String,
     style: Style,
 }
 
 impl Renderable for FoldedMessageRenderable {
     fn render(&self, area: Rect, buf: &mut Buffer) {
-        Paragraph::new(Line::from(format!("▶ {} message collapsed", self.kind.label())).dim())
+        Paragraph::new(Line::from(self.label.clone()).dim())
             .style(self.style)
             .wrap(Wrap { trim: false })
             .render(area, buf);
     }
 
     fn desired_height(&self, width: u16) -> u16 {
-        Paragraph::new(format!("▶ {} message collapsed", self.kind.label()))
+        Paragraph::new(self.label.clone())
             .wrap(Wrap { trim: false })
             .line_count(width)
             .try_into()
@@ -486,6 +488,7 @@ pub(crate) struct TranscriptOverlay {
     /// Committed transcript cells (does not include the live tail).
     cells: Vec<Arc<dyn HistoryCell>>,
     message_ids: Vec<Option<TranscriptMessageId>>,
+    message_summaries: Vec<Option<TranscriptFoldSummary>>,
     fold_state: TranscriptFoldState,
     fold_selection: Option<usize>,
     fold_state_changed: bool,
@@ -522,11 +525,13 @@ impl TranscriptOverlay {
         fold_state: TranscriptFoldState,
     ) -> Self {
         let message_ids = message_ids(&transcript_cells);
+        let message_summaries = message_summaries(&transcript_cells, &message_ids);
         Self {
             view: PagerView::new(
                 Self::render_cells(
                     &transcript_cells,
                     &message_ids,
+                    &message_summaries,
                     &fold_state,
                     /*highlight_cell*/ None,
                     /*fold_selection*/ None,
@@ -537,6 +542,7 @@ impl TranscriptOverlay {
             ),
             cells: transcript_cells,
             message_ids,
+            message_summaries,
             fold_state,
             fold_selection: None,
             fold_state_changed: false,
@@ -550,6 +556,7 @@ impl TranscriptOverlay {
     fn render_cells(
         cells: &[Arc<dyn HistoryCell>],
         message_ids: &[Option<TranscriptMessageId>],
+        message_summaries: &[Option<TranscriptFoldSummary>],
         fold_state: &TranscriptFoldState,
         highlight_cell: Option<usize>,
         fold_selection: Option<usize>,
@@ -559,7 +566,15 @@ impl TranscriptOverlay {
             .enumerate()
             .flat_map(|(i, c)| {
                 let mut v: Vec<Box<dyn Renderable>> = Vec::new();
-                let selected = highlight_cell == Some(i) || fold_selection == Some(i);
+                let selected_message = fold_selection
+                    .and_then(|selected| message_ids.get(selected))
+                    .copied()
+                    .flatten();
+                let selected = highlight_cell == Some(i)
+                    || fold_selection == Some(i)
+                    || (is_message_start(message_ids, i)
+                        && selected_message == message_ids[i]
+                        && message_ids[i].is_some_and(|message| fold_state.is_collapsed(message)));
                 let style = if c.as_any().is::<UserHistoryCell>() {
                     if selected {
                         user_message_style().reversed()
@@ -580,7 +595,12 @@ impl TranscriptOverlay {
                         })) as Box<dyn Renderable>
                     } else {
                         Box::new(CachedRenderable::new(FoldedMessageRenderable {
-                            kind: message_id.kind,
+                            label: message_summaries[i]
+                                .as_ref()
+                                .map(TranscriptFoldSummary::label)
+                                .unwrap_or_else(|| {
+                                    format!("▶ {} message collapsed", message_id.kind.label())
+                                }),
                             style,
                         })) as Box<dyn Renderable>
                     }
@@ -625,9 +645,11 @@ impl TranscriptOverlay {
         let tail_renderable = self.take_live_tail_renderable();
         self.cells.push(cell);
         self.message_ids = message_ids(&self.cells);
+        self.message_summaries = message_summaries(&self.cells, &self.message_ids);
         self.view.renderables = Self::render_cells(
             &self.cells,
             &self.message_ids,
+            &self.message_summaries,
             &self.fold_state,
             self.highlight_cell,
             self.fold_selection,
@@ -665,6 +687,7 @@ impl TranscriptOverlay {
         let follow_bottom = self.view.is_scrolled_to_bottom();
         self.cells = cells;
         self.message_ids = message_ids(&self.cells);
+        self.message_summaries = message_summaries(&self.cells, &self.message_ids);
         if self
             .highlight_cell
             .is_some_and(|idx| idx >= self.cells.len())
@@ -708,6 +731,7 @@ impl TranscriptOverlay {
             self.cells
                 .splice(clamped_start..clamped_end, std::iter::once(consolidated));
             self.message_ids = message_ids(&self.cells);
+            self.message_summaries = message_summaries(&self.cells, &self.message_ids);
             if self
                 .highlight_cell
                 .is_some_and(|highlight_cell| highlight_cell >= self.cells.len())
@@ -781,23 +805,38 @@ impl TranscriptOverlay {
         let next = match (self.fold_selection, direction) {
             (None, std::cmp::Ordering::Less) => (0..self.cells.len())
                 .rev()
-                .find(|index| is_message_start(&self.message_ids, *index)),
-            (None, std::cmp::Ordering::Equal | std::cmp::Ordering::Greater) => {
-                (0..self.cells.len()).find(|index| is_message_start(&self.message_ids, *index))
-            }
+                .find(|index| is_selectable_message_start(&self.cells, &self.message_ids, *index)),
+            (None, std::cmp::Ordering::Equal | std::cmp::Ordering::Greater) => (0..self
+                .cells
+                .len())
+                .find(|index| is_selectable_message_start(&self.cells, &self.message_ids, *index)),
             (Some(selected), std::cmp::Ordering::Less) => (0..selected)
                 .rev()
-                .find(|index| is_message_start(&self.message_ids, *index)),
-            (Some(selected), std::cmp::Ordering::Equal | std::cmp::Ordering::Greater) => {
-                (selected.saturating_add(1)..self.cells.len())
-                    .find(|index| is_message_start(&self.message_ids, *index))
-            }
+                .find(|index| is_selectable_message_start(&self.cells, &self.message_ids, *index)),
+            (Some(selected), std::cmp::Ordering::Equal | std::cmp::Ordering::Greater) => (selected
+                .saturating_add(1)
+                ..self.cells.len())
+                .find(|index| is_selectable_message_start(&self.cells, &self.message_ids, *index)),
         };
         if let Some(next) = next {
             self.fold_selection = Some(next);
             self.rebuild_renderables();
-            self.view.scroll_chunk_into_view(next);
+            self.view
+                .scroll_chunk_into_view(self.fold_selection_render_index(next));
         }
+    }
+
+    fn fold_selection_render_index(&self, selected: usize) -> usize {
+        let Some(message) = self.message_ids.get(selected).copied().flatten() else {
+            return selected;
+        };
+        if !self.fold_state.is_collapsed(message) {
+            return selected;
+        }
+        self.message_ids
+            .iter()
+            .position(|candidate| *candidate == Some(message))
+            .unwrap_or(selected)
     }
 
     fn toggle_selected_message(&mut self) {
@@ -811,6 +850,10 @@ impl TranscriptOverlay {
         self.fold_state_changed = true;
         self.fold_state_changed_since_open = true;
         self.rebuild_renderables();
+        if let Some(selected) = self.fold_selection {
+            self.view
+                .scroll_chunk_into_view(self.fold_selection_render_index(selected));
+        }
     }
 
     fn collapse_all_messages(&mut self) {
@@ -848,6 +891,7 @@ impl TranscriptOverlay {
         self.view.renderables = Self::render_cells(
             &self.cells,
             &self.message_ids,
+            &self.message_summaries,
             &self.fold_state,
             self.highlight_cell,
             self.fold_selection,
@@ -1341,6 +1385,12 @@ mod tests {
     #[test]
     fn transcript_overlay_treats_streamed_assistant_cells_as_one_message() {
         let mut overlay = transcript_overlay(vec![
+            Arc::new(UserHistoryCell {
+                message: "initial user message".to_string(),
+                text_elements: Vec::new(),
+                local_image_paths: Vec::new(),
+                remote_image_urls: Vec::new(),
+            }),
             Arc::new(history_cell::AgentMessageCell::new(
                 vec![Line::from("assistant part one")],
                 true,
@@ -1359,11 +1409,13 @@ mod tests {
 
         overlay.move_fold_selection(std::cmp::Ordering::Greater);
         assert_eq!(overlay.fold_selection, Some(0));
+        overlay.move_fold_selection(std::cmp::Ordering::Greater);
+        assert_eq!(overlay.fold_selection, Some(1));
         overlay.toggle_selected_message();
         overlay.move_fold_selection(std::cmp::Ordering::Greater);
         assert_eq!(
             overlay.fold_selection,
-            Some(2),
+            Some(3),
             "selection should skip the continuation cell"
         );
 
@@ -1371,7 +1423,41 @@ mod tests {
         let mut buf = Buffer::empty(area);
         overlay.render(area, &mut buf);
         let rendered = buffer_to_text(&buf, area);
-        assert_eq!(rendered.matches("Assistant message collapsed").count(), 1);
+        assert_eq!(rendered.matches("Assistant response collapsed").count(), 1);
+    }
+
+    #[test]
+    fn transcript_overlay_folds_tool_calls_with_assistant_response() {
+        let mut overlay = transcript_overlay(vec![
+            Arc::new(UserHistoryCell {
+                message: "search for this".to_string(),
+                text_elements: Vec::new(),
+                local_image_paths: Vec::new(),
+                remote_image_urls: Vec::new(),
+            }),
+            Arc::new(history_cell::new_web_search_call(
+                "call-1".to_string(),
+                "folding behavior".to_string(),
+                codex_app_server_protocol::WebSearchAction::Other,
+            )),
+            Arc::new(history_cell::AgentMessageCell::new(
+                vec![Line::from("assistant answer")],
+                false,
+            )),
+        ]);
+
+        overlay.move_fold_selection(std::cmp::Ordering::Greater);
+        overlay.move_fold_selection(std::cmp::Ordering::Greater);
+        assert_eq!(overlay.fold_selection, Some(2));
+        overlay.toggle_selected_message();
+
+        let area = Rect::new(0, 0, 100, 10);
+        let mut buf = Buffer::empty(area);
+        overlay.render(area, &mut buf);
+        let rendered = buffer_to_text(&buf, area);
+        assert!(!rendered.contains("Searched the web"));
+        assert!(!rendered.contains("assistant answer"));
+        assert!(rendered.contains("Assistant response collapsed · 1 tool call"));
     }
 
     #[test]

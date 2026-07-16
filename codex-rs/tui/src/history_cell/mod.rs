@@ -187,6 +187,14 @@ pub(crate) fn plain_lines(lines: impl IntoIterator<Item = Line<'static>>) -> Vec
 /// heights when they apply additional layout logic beyond what
 /// `Paragraph::line_count` captures.
 pub(crate) trait HistoryCell: std::fmt::Debug + Send + Sync + Any {
+    /// Number of agent tool invocations represented by this cell.
+    ///
+    /// Transcript folding uses this only for the assistant placeholder summary;
+    /// it does not change what is sent to the model or whether the cell is kept.
+    fn transcript_tool_call_count(&self) -> usize {
+        0
+    }
+
     /// Returns the logical lines for the main chat viewport.
     fn display_lines(&self, width: u16) -> Vec<Line<'static>>;
 
