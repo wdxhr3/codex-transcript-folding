@@ -964,6 +964,8 @@ impl TranscriptOverlay {
                     code: KeyCode::Tab, ..
                 } => {
                     self.move_fold_selection(std::cmp::Ordering::Greater);
+                    tui.frame_requester()
+                        .schedule_frame_in(crate::tui::TARGET_FRAME_INTERVAL);
                     Ok(())
                 }
                 KeyEvent {
@@ -971,6 +973,8 @@ impl TranscriptOverlay {
                     ..
                 } => {
                     self.move_fold_selection(std::cmp::Ordering::Less);
+                    tui.frame_requester()
+                        .schedule_frame_in(crate::tui::TARGET_FRAME_INTERVAL);
                     Ok(())
                 }
                 KeyEvent {
@@ -978,6 +982,8 @@ impl TranscriptOverlay {
                     ..
                 } => {
                     self.toggle_selected_message();
+                    tui.frame_requester()
+                        .schedule_frame_in(crate::tui::TARGET_FRAME_INTERVAL);
                     Ok(())
                 }
                 KeyEvent {
@@ -986,6 +992,8 @@ impl TranscriptOverlay {
                     ..
                 } => {
                     self.collapse_all_messages();
+                    tui.frame_requester()
+                        .schedule_frame_in(crate::tui::TARGET_FRAME_INTERVAL);
                     Ok(())
                 }
                 KeyEvent {
@@ -993,6 +1001,8 @@ impl TranscriptOverlay {
                     ..
                 } => {
                     self.expand_all_messages();
+                    tui.frame_requester()
+                        .schedule_frame_in(crate::tui::TARGET_FRAME_INTERVAL);
                     Ok(())
                 }
                 other => self.view.handle_key_event(tui, other),
