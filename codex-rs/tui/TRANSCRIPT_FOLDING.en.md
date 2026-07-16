@@ -68,14 +68,14 @@ Codex owns and renders continuously.
 
 ## 4. Shortcuts
 
-| Key | Action |
-| --- | --- |
-| `Tab` | Select the next user or assistant message |
-| `Shift+Tab` | Select the previous user or assistant message |
-| `Space` | Toggle the selected message |
-| `f` | Fold all user and assistant messages |
-| `Shift+F` | Expand all messages |
-| `q` or `Ctrl+T` | Close and repaint the normal interface |
+| Key             | Action                                        |
+| --------------- | --------------------------------------------- |
+| `Tab`           | Select the next user or assistant message     |
+| `Shift+Tab`     | Select the previous user or assistant message |
+| `Space`         | Toggle the selected message                   |
+| `f`             | Fold all user and assistant messages          |
+| `Shift+F`       | Expand all messages                           |
+| `q` or `Ctrl+T` | Close and repaint the normal interface        |
 
 A streamed assistant response may occupy several internal cells. It is treated
 as one message and produces only one `▶ Assistant message collapsed`

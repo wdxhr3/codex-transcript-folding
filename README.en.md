@@ -29,14 +29,14 @@ side effects.
 
 Press `Ctrl+T` in the normal Codex CLI interface to open the managed transcript.
 
-| Key | Action |
-| --- | --- |
-| `Tab` | Select the next completed user or assistant message |
-| `Shift+Tab` | Select the previous completed user or assistant message |
-| `Space` | Fold or expand the selected message |
-| `f` | Fold all user and assistant messages in the current task |
-| `Shift+F` | Expand all messages in the current task |
-| `q` or `Ctrl+T` | Close the transcript and rebuild the normal inline view |
+| Key             | Action                                                   |
+| --------------- | -------------------------------------------------------- |
+| `Tab`           | Select the next completed user or assistant message      |
+| `Shift+Tab`     | Select the previous completed user or assistant message  |
+| `Space`         | Fold or expand the selected message                      |
+| `f`             | Fold all user and assistant messages in the current task |
+| `Shift+F`       | Expand all messages in the current task                  |
+| `q` or `Ctrl+T` | Close the transcript and rebuild the normal inline view  |
 
 Folded messages are replaced by one of these reversible placeholders:
 
