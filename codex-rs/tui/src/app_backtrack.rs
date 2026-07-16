@@ -194,9 +194,11 @@ impl App {
     /// Open transcript overlay (enters alternate screen and shows full transcript).
     pub(crate) fn open_transcript_overlay(&mut self, tui: &mut tui::Tui) {
         let _ = tui.enter_alt_screen();
+        let fold_state = self.current_transcript_fold_state();
         self.overlay = Some(Overlay::new_transcript(
             self.transcript_cells.clone(),
             self.keymap.pager.clone(),
+            fold_state,
         ));
         tui.frame_requester().schedule_frame();
     }
@@ -219,6 +221,21 @@ impl App {
             // Ensure backtrack state is fully reset when overlay closes (e.g. via 'q').
             self.reset_backtrack_state();
         }
+    }
+
+    fn close_transcript_overlay_with_fold_reflow(&mut self, tui: &mut tui::Tui) -> Result<()> {
+        let reflow_needed = self
+            .overlay
+            .as_ref()
+            .is_some_and(Overlay::transcript_fold_reflow_needed);
+        if reflow_needed {
+            self.deferred_history_lines.clear();
+        }
+        self.close_transcript_overlay(tui);
+        if reflow_needed {
+            self.reflow_transcript_now(tui)?;
+        }
+        Ok(())
     }
 
     /// Initialize backtrack state and show composer hint.
@@ -362,18 +379,27 @@ impl App {
                     .schedule_frame_in(std::time::Duration::from_millis(50));
             }
             if close_overlay {
-                self.close_transcript_overlay(tui);
+                self.close_transcript_overlay_with_fold_reflow(tui)?;
                 tui.frame_requester().schedule_frame();
             }
             return Ok(());
         }
 
-        if let Some(overlay) = &mut self.overlay {
+        let (fold_state_update, overlay_done) = if let Some(overlay) = &mut self.overlay {
             overlay.handle_event(tui, event)?;
-            if overlay.is_done() {
-                self.close_transcript_overlay(tui);
-                tui.frame_requester().schedule_frame();
-            }
+            (
+                overlay.take_transcript_fold_state_update(),
+                overlay.is_done(),
+            )
+        } else {
+            (None, false)
+        };
+        if let Some(fold_state) = fold_state_update {
+            self.update_transcript_fold_state(fold_state);
+        }
+        if overlay_done {
+            self.close_transcript_overlay_with_fold_reflow(tui)?;
+            tui.frame_requester().schedule_frame();
         }
         Ok(())
     }

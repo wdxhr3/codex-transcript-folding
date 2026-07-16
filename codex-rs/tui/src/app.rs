@@ -74,6 +74,7 @@ use crate::test_support::test_path_buf;
 #[cfg(test)]
 use crate::test_support::test_path_display;
 use crate::token_usage::TokenUsage;
+use crate::transcript_folding::TranscriptFoldCache;
 use crate::transcript_reflow::TranscriptReflowState;
 use crate::tui;
 use crate::tui::TuiEvent;
@@ -519,6 +520,7 @@ pub(crate) struct App {
     pub(crate) file_search: FileSearchManager,
 
     pub(crate) transcript_cells: Vec<Arc<dyn HistoryCell>>,
+    pub(crate) transcript_fold_cache: TranscriptFoldCache,
 
     // Pager overlay state (Transcript or Static like Diff)
     pub(crate) overlay: Option<Overlay>,
@@ -1038,6 +1040,7 @@ See the Codex keymap documentation for supported actions and examples."
             enhanced_keys_supported,
             keymap: runtime_keymap,
             transcript_cells: Vec::new(),
+            transcript_fold_cache: TranscriptFoldCache::default(),
             overlay: None,
             deferred_history_lines: Vec::new(),
             has_emitted_history_lines: false,

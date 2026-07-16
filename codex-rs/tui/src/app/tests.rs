@@ -4132,6 +4132,7 @@ async fn make_test_app() -> App {
         runtime_permission_profile_override: None,
         file_search,
         transcript_cells: Vec::new(),
+        transcript_fold_cache: crate::transcript_folding::TranscriptFoldCache::default(),
         overlay: None,
         deferred_history_lines: Vec::new(),
         has_emitted_history_lines: false,
@@ -4198,6 +4199,7 @@ async fn make_test_app_with_channels() -> (
             runtime_permission_profile_override: None,
             file_search,
             transcript_cells: Vec::new(),
+            transcript_fold_cache: crate::transcript_folding::TranscriptFoldCache::default(),
             overlay: None,
             deferred_history_lines: Vec::new(),
             has_emitted_history_lines: false,
@@ -4536,6 +4538,45 @@ async fn uncapped_resize_reflow_renders_all_cells_when_row_cap_absent() {
     assert_eq!(rendered.lines.len(), 39);
     assert_eq!(rendered_line_text(&rendered.lines[0]), "cell 0");
     assert_eq!(rendered_line_text(&rendered.lines[38]), "cell 19");
+}
+
+#[tokio::test]
+async fn resize_reflow_replaces_folded_user_and_assistant_messages() {
+    let (mut app, _rx, _op_rx) = make_test_app_with_channels().await;
+    app.config.terminal_resize_reflow.max_rows = TerminalResizeReflowMaxRows::Disabled;
+    app.transcript_cells = vec![
+        Arc::new(UserHistoryCell {
+            message: "user content that should be hidden".to_string(),
+            text_elements: Vec::new(),
+            local_image_paths: Vec::new(),
+            remote_image_urls: Vec::new(),
+        }),
+        Arc::new(AgentMarkdownCell::new(
+            "assistant content that should be hidden".to_string(),
+            Path::new("/tmp"),
+        )),
+    ];
+    let ids = crate::transcript_folding::message_ids(&app.transcript_cells);
+    let mut fold_state = crate::transcript_folding::TranscriptFoldState::default();
+    fold_state.toggle(ids[0].expect("user message id"));
+    fold_state.toggle(ids[1].expect("assistant message id"));
+    app.update_transcript_fold_state(fold_state);
+
+    let rendered = app.render_transcript_lines_for_reflow(/*width*/ 80);
+    let rendered = rendered
+        .lines
+        .iter()
+        .map(rendered_line_text)
+        .collect::<Vec<_>>();
+
+    assert_eq!(
+        rendered,
+        vec![
+            "▶ User message collapsed".to_string(),
+            String::new(),
+            "▶ Assistant message collapsed".to_string(),
+        ]
+    );
 }
 
 #[tokio::test]
@@ -6287,6 +6328,7 @@ async fn clear_only_ui_reset_preserves_chat_session_state() {
     app.overlay = Some(Overlay::new_transcript(
         app.transcript_cells.clone(),
         crate::keymap::RuntimeKeymap::defaults().pager,
+        crate::transcript_folding::TranscriptFoldState::default(),
     ));
     app.deferred_history_lines = vec![Line::from("stale buffered line").into()];
     app.has_emitted_history_lines = true;
@@ -6294,6 +6336,13 @@ async fn clear_only_ui_reset_preserves_chat_session_state() {
     app.backtrack.overlay_preview_active = true;
     app.backtrack.nth_user_message = 0;
     app.backtrack_render_pending = true;
+    let first_user = crate::transcript_folding::TranscriptMessageId {
+        kind: crate::transcript_folding::TranscriptMessageKind::User,
+        ordinal: 0,
+    };
+    let mut fold_state = crate::transcript_folding::TranscriptFoldState::default();
+    fold_state.toggle(first_user);
+    app.update_transcript_fold_state(fold_state);
 
     app.reset_app_ui_state_after_clear();
 
@@ -6304,6 +6353,10 @@ async fn clear_only_ui_reset_preserves_chat_session_state() {
     assert!(!app.backtrack.primed);
     assert!(!app.backtrack.overlay_preview_active);
     assert!(!app.backtrack_render_pending);
+    assert!(
+        !app.current_transcript_fold_state().is_collapsed(first_user),
+        "clear should reset fold ordinals for new messages"
+    );
     assert_eq!(app.chat_widget.thread_id(), Some(thread_id));
     assert_eq!(app.chat_widget.composer_text_with_pending(), "draft prompt");
 }

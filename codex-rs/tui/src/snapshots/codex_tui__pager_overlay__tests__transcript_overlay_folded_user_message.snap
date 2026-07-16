@@ -1,0 +1,14 @@
+---
+source: tui/src/pager_overlay.rs
+expression: term.backend()
+---
+"/ T R A N S C R I P T / / / / / / / / / / / / / / / / / / / / / / / / / / / / / "
+"▶ User message collapsed                                                        "
+"~                                                                               "
+"~                                                                               "
+"~                                                                               "
+"~                                                                               "
+"───────────────────────────────────────────────────────────────────────── 100% ─"
+" ↑/↓ to scroll   pgup/pgdn to page   home/end to jump                           "
+" q to quit   tab select   space toggle   f fold all   shift + f expand all   esc"
+"                                                                                "

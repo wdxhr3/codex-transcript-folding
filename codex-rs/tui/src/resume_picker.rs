@@ -975,6 +975,7 @@ impl PickerState {
         self.overlay = Some(Overlay::new_transcript(
             cells.clone(),
             self.pager_keymap.clone(),
+            crate::transcript_folding::TranscriptFoldState::default(),
         ));
         self.pending_transcript_open = None;
         self.transcript_loading_frame_shown = false;

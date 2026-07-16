@@ -78,6 +78,7 @@ use tracing::warn;
 use tracing_appender::non_blocking;
 use tracing_subscriber::EnvFilter;
 use tracing_subscriber::prelude::*;
+mod transcript_folding;
 use url::Url;
 use uuid::Uuid;
 

@@ -160,6 +160,11 @@ impl App {
 
     pub(super) fn reset_app_ui_state_after_clear(&mut self) {
         self.reset_transcript_state_after_clear();
+        // `/clear` keeps the current thread id but restarts display ordinals at zero. Discard the
+        // old fold mapping so a newly inserted message cannot inherit an old message's fold state.
+        self.update_transcript_fold_state(
+            crate::transcript_folding::TranscriptFoldState::default(),
+        );
     }
 
     pub(super) fn reset_transcript_state_after_clear(&mut self) {

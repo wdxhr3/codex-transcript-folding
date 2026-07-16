@@ -32,6 +32,11 @@ use crate::style::user_message_style;
 use crate::terminal_hyperlinks::HyperlinkLine;
 use crate::terminal_hyperlinks::mark_buffer_hyperlinks;
 use crate::terminal_hyperlinks::visible_lines;
+use crate::transcript_folding::TranscriptFoldState;
+use crate::transcript_folding::TranscriptMessageId;
+use crate::transcript_folding::TranscriptMessageKind;
+use crate::transcript_folding::is_message_start;
+use crate::transcript_folding::message_ids;
 use crate::tui;
 use crate::tui::TuiEvent;
 use crossterm::event::KeyCode;
@@ -56,8 +61,12 @@ pub(crate) enum Overlay {
 }
 
 impl Overlay {
-    pub(crate) fn new_transcript(cells: Vec<Arc<dyn HistoryCell>>, keymap: PagerKeymap) -> Self {
-        Self::Transcript(TranscriptOverlay::new(cells, keymap))
+    pub(crate) fn new_transcript(
+        cells: Vec<Arc<dyn HistoryCell>>,
+        keymap: PagerKeymap,
+        fold_state: TranscriptFoldState,
+    ) -> Self {
+        Self::Transcript(TranscriptOverlay::new(cells, keymap, fold_state))
     }
 
     pub(crate) fn new_static_with_lines(
@@ -87,6 +96,20 @@ impl Overlay {
         match self {
             Overlay::Transcript(o) => o.is_done(),
             Overlay::Static(o) => o.is_done(),
+        }
+    }
+
+    pub(crate) fn take_transcript_fold_state_update(&mut self) -> Option<TranscriptFoldState> {
+        match self {
+            Self::Transcript(overlay) => overlay.take_fold_state_update(),
+            Self::Static(_) => None,
+        }
+    }
+
+    pub(crate) fn transcript_fold_reflow_needed(&self) -> bool {
+        match self {
+            Self::Transcript(overlay) => overlay.fold_state_changed_since_open,
+            Self::Static(_) => false,
         }
     }
 }
@@ -396,6 +419,28 @@ struct CellRenderable {
     style: Style,
 }
 
+struct FoldedMessageRenderable {
+    kind: TranscriptMessageKind,
+    style: Style,
+}
+
+impl Renderable for FoldedMessageRenderable {
+    fn render(&self, area: Rect, buf: &mut Buffer) {
+        Paragraph::new(Line::from(format!("▶ {} message collapsed", self.kind.label())).dim())
+            .style(self.style)
+            .wrap(Wrap { trim: false })
+            .render(area, buf);
+    }
+
+    fn desired_height(&self, width: u16) -> u16 {
+        Paragraph::new(format!("▶ {} message collapsed", self.kind.label()))
+            .wrap(Wrap { trim: false })
+            .line_count(width)
+            .try_into()
+            .unwrap_or(0)
+    }
+}
+
 impl Renderable for CellRenderable {
     fn render(&self, area: Rect, buf: &mut Buffer) {
         let hyperlink_lines = self.cell.transcript_hyperlink_lines(area.width);
@@ -440,6 +485,11 @@ pub(crate) struct TranscriptOverlay {
     view: PagerView,
     /// Committed transcript cells (does not include the live tail).
     cells: Vec<Arc<dyn HistoryCell>>,
+    message_ids: Vec<Option<TranscriptMessageId>>,
+    fold_state: TranscriptFoldState,
+    fold_selection: Option<usize>,
+    fold_state_changed: bool,
+    fold_state_changed_since_open: bool,
     highlight_cell: Option<usize>,
     /// Cache key for the render-only live tail appended after committed cells.
     live_tail_key: Option<LiveTailKey>,
@@ -466,15 +516,31 @@ impl TranscriptOverlay {
     ///
     /// This overlay does not own the "active cell"; callers may optionally append a live tail via
     /// `sync_live_tail` during draws to reflect in-flight activity.
-    pub(crate) fn new(transcript_cells: Vec<Arc<dyn HistoryCell>>, keymap: PagerKeymap) -> Self {
+    pub(crate) fn new(
+        transcript_cells: Vec<Arc<dyn HistoryCell>>,
+        keymap: PagerKeymap,
+        fold_state: TranscriptFoldState,
+    ) -> Self {
+        let message_ids = message_ids(&transcript_cells);
         Self {
             view: PagerView::new(
-                Self::render_cells(&transcript_cells, /*highlight_cell*/ None),
+                Self::render_cells(
+                    &transcript_cells,
+                    &message_ids,
+                    &fold_state,
+                    /*highlight_cell*/ None,
+                    /*fold_selection*/ None,
+                ),
                 "T R A N S C R I P T".to_string(),
                 usize::MAX,
                 keymap,
             ),
             cells: transcript_cells,
+            message_ids,
+            fold_state,
+            fold_selection: None,
+            fold_state_changed: false,
+            fold_state_changed_since_open: false,
             highlight_cell: None,
             live_tail_key: None,
             is_done: false,
@@ -483,26 +549,50 @@ impl TranscriptOverlay {
 
     fn render_cells(
         cells: &[Arc<dyn HistoryCell>],
+        message_ids: &[Option<TranscriptMessageId>],
+        fold_state: &TranscriptFoldState,
         highlight_cell: Option<usize>,
+        fold_selection: Option<usize>,
     ) -> Vec<Box<dyn Renderable>> {
         cells
             .iter()
             .enumerate()
             .flat_map(|(i, c)| {
                 let mut v: Vec<Box<dyn Renderable>> = Vec::new();
-                let mut cell_renderable = if c.as_any().is::<UserHistoryCell>() {
+                let selected = highlight_cell == Some(i) || fold_selection == Some(i);
+                let style = if c.as_any().is::<UserHistoryCell>() {
+                    if selected {
+                        user_message_style().reversed()
+                    } else {
+                        user_message_style()
+                    }
+                } else if selected {
+                    Style::default().reversed()
+                } else {
+                    Style::default()
+                };
+                let mut cell_renderable = if let Some(message_id) = message_ids[i]
+                    && fold_state.is_collapsed(message_id)
+                {
+                    if !is_message_start(message_ids, i) {
+                        Box::new(CachedRenderable::new(HyperlinkLinesRenderable {
+                            lines: Vec::new(),
+                        })) as Box<dyn Renderable>
+                    } else {
+                        Box::new(CachedRenderable::new(FoldedMessageRenderable {
+                            kind: message_id.kind,
+                            style,
+                        })) as Box<dyn Renderable>
+                    }
+                } else if c.as_any().is::<UserHistoryCell>() {
                     Box::new(CachedRenderable::new(CellRenderable {
                         cell: c.clone(),
-                        style: if highlight_cell == Some(i) {
-                            user_message_style().reversed()
-                        } else {
-                            user_message_style()
-                        },
+                        style,
                     })) as Box<dyn Renderable>
                 } else {
                     Box::new(CachedRenderable::new(CellRenderable {
                         cell: c.clone(),
-                        style: Style::default(),
+                        style,
                     })) as Box<dyn Renderable>
                 };
                 if !c.is_stream_continuation() && i > 0 {
@@ -534,7 +624,14 @@ impl TranscriptOverlay {
         let had_prior_cells = !self.cells.is_empty();
         let tail_renderable = self.take_live_tail_renderable();
         self.cells.push(cell);
-        self.view.renderables = Self::render_cells(&self.cells, self.highlight_cell);
+        self.message_ids = message_ids(&self.cells);
+        self.view.renderables = Self::render_cells(
+            &self.cells,
+            &self.message_ids,
+            &self.fold_state,
+            self.highlight_cell,
+            self.fold_selection,
+        );
         if let Some(tail) = tail_renderable {
             let tail = if !had_prior_cells
                 && self
@@ -567,6 +664,7 @@ impl TranscriptOverlay {
     pub(crate) fn replace_cells(&mut self, cells: Vec<Arc<dyn HistoryCell>>) {
         let follow_bottom = self.view.is_scrolled_to_bottom();
         self.cells = cells;
+        self.message_ids = message_ids(&self.cells);
         if self
             .highlight_cell
             .is_some_and(|idx| idx >= self.cells.len())
@@ -609,6 +707,7 @@ impl TranscriptOverlay {
             }
             self.cells
                 .splice(clamped_start..clamped_end, std::iter::once(consolidated));
+            self.message_ids = message_ids(&self.cells);
             if self
                 .highlight_cell
                 .is_some_and(|highlight_cell| highlight_cell >= self.cells.len())
@@ -678,6 +777,64 @@ impl TranscriptOverlay {
         }
     }
 
+    fn move_fold_selection(&mut self, direction: std::cmp::Ordering) {
+        let next = match (self.fold_selection, direction) {
+            (None, std::cmp::Ordering::Less) => (0..self.cells.len())
+                .rev()
+                .find(|index| is_message_start(&self.message_ids, *index)),
+            (None, std::cmp::Ordering::Equal | std::cmp::Ordering::Greater) => {
+                (0..self.cells.len()).find(|index| is_message_start(&self.message_ids, *index))
+            }
+            (Some(selected), std::cmp::Ordering::Less) => (0..selected)
+                .rev()
+                .find(|index| is_message_start(&self.message_ids, *index)),
+            (Some(selected), std::cmp::Ordering::Equal | std::cmp::Ordering::Greater) => {
+                (selected.saturating_add(1)..self.cells.len())
+                    .find(|index| is_message_start(&self.message_ids, *index))
+            }
+        };
+        if let Some(next) = next {
+            self.fold_selection = Some(next);
+            self.rebuild_renderables();
+            self.view.scroll_chunk_into_view(next);
+        }
+    }
+
+    fn toggle_selected_message(&mut self) {
+        let Some(message) = self
+            .fold_selection
+            .and_then(|index| self.message_ids.get(index).copied().flatten())
+        else {
+            return;
+        };
+        self.fold_state.toggle(message);
+        self.fold_state_changed = true;
+        self.fold_state_changed_since_open = true;
+        self.rebuild_renderables();
+    }
+
+    fn collapse_all_messages(&mut self) {
+        self.fold_state
+            .collapse_all(self.message_ids.iter().flatten().copied());
+        self.fold_state_changed = true;
+        self.fold_state_changed_since_open = true;
+        self.rebuild_renderables();
+    }
+
+    fn expand_all_messages(&mut self) {
+        self.fold_state.expand_all();
+        self.fold_state_changed = true;
+        self.fold_state_changed_since_open = true;
+        self.rebuild_renderables();
+    }
+
+    pub(crate) fn take_fold_state_update(&mut self) -> Option<TranscriptFoldState> {
+        self.fold_state_changed.then(|| {
+            self.fold_state_changed = false;
+            self.fold_state.clone()
+        })
+    }
+
     /// Returns whether the underlying pager view is currently pinned to the bottom.
     ///
     /// The `App` draw loop uses this to decide whether to schedule animation frames for the live
@@ -688,7 +845,13 @@ impl TranscriptOverlay {
 
     fn rebuild_renderables(&mut self) {
         let tail_renderable = self.take_live_tail_renderable();
-        self.view.renderables = Self::render_cells(&self.cells, self.highlight_cell);
+        self.view.renderables = Self::render_cells(
+            &self.cells,
+            &self.message_ids,
+            &self.fold_state,
+            self.highlight_cell,
+            self.fold_selection,
+        );
         if let Some(tail) = tail_renderable {
             self.view.renderables.push(tail);
         }
@@ -754,6 +917,14 @@ impl TranscriptOverlay {
 
         let mut pairs: Vec<(Vec<KeyBinding>, &str)> =
             vec![(first_or_empty(&self.view.keymap.close), "to quit")];
+        if self.message_ids.iter().any(Option::is_some) {
+            pairs.push((vec![key_hint::plain(KeyCode::Tab)], "select"));
+            if self.fold_selection.is_some() {
+                pairs.push((vec![key_hint::plain(KeyCode::Char(' '))], "toggle"));
+            }
+            pairs.push((vec![key_hint::plain(KeyCode::Char('f'))], "fold all"));
+            pairs.push((vec![key_hint::shift(KeyCode::Char('f'))], "expand all"));
+        }
         if self.highlight_cell.is_some() {
             pairs.push((
                 vec![
@@ -787,6 +958,41 @@ impl TranscriptOverlay {
                     || self.view.keymap.close_transcript.is_pressed(e) =>
                 {
                     self.is_done = true;
+                    Ok(())
+                }
+                KeyEvent {
+                    code: KeyCode::Tab, ..
+                } => {
+                    self.move_fold_selection(std::cmp::Ordering::Greater);
+                    Ok(())
+                }
+                KeyEvent {
+                    code: KeyCode::BackTab,
+                    ..
+                } => {
+                    self.move_fold_selection(std::cmp::Ordering::Less);
+                    Ok(())
+                }
+                KeyEvent {
+                    code: KeyCode::Char(' '),
+                    ..
+                } => {
+                    self.toggle_selected_message();
+                    Ok(())
+                }
+                KeyEvent {
+                    code: KeyCode::Char('f'),
+                    modifiers: crossterm::event::KeyModifiers::NONE,
+                    ..
+                } => {
+                    self.collapse_all_messages();
+                    Ok(())
+                }
+                KeyEvent {
+                    code: KeyCode::Char('F'),
+                    ..
+                } => {
+                    self.expand_all_messages();
                     Ok(())
                 }
                 other => self.view.handle_key_event(tui, other),
@@ -985,7 +1191,11 @@ mod tests {
     }
 
     fn transcript_overlay(cells: Vec<Arc<dyn HistoryCell>>) -> TranscriptOverlay {
-        TranscriptOverlay::new(cells, default_pager_keymap())
+        TranscriptOverlay::new(
+            cells,
+            default_pager_keymap(),
+            TranscriptFoldState::default(),
+        )
     }
 
     fn static_overlay(lines: Vec<Line<'static>>, title: &str) -> StaticOverlay {
@@ -1060,6 +1270,98 @@ mod tests {
         term.draw(|f| overlay.render(f.area(), f.buffer_mut()))
             .expect("draw");
         assert_snapshot!(term.backend());
+    }
+
+    #[test]
+    fn transcript_overlay_folds_selected_user_message() {
+        let mut overlay = transcript_overlay(vec![Arc::new(UserHistoryCell {
+            message: "keep this out of the visible transcript".to_string(),
+            text_elements: Vec::new(),
+            local_image_paths: Vec::new(),
+            remote_image_urls: Vec::new(),
+        })]);
+
+        overlay.move_fold_selection(std::cmp::Ordering::Greater);
+        overlay.toggle_selected_message();
+
+        let mut term = Terminal::new(TestBackend::new(80, 10)).expect("term");
+        term.draw(|frame| overlay.render(frame.area(), frame.buffer_mut()))
+            .expect("draw");
+
+        let rendered = buffer_to_text(term.backend().buffer(), term.backend().buffer().area);
+        assert!(rendered.contains("User message collapsed"));
+        assert!(overlay.take_fold_state_update().is_some());
+        assert_snapshot!("transcript_overlay_folded_user_message", term.backend());
+    }
+
+    #[test]
+    fn transcript_overlay_collapses_and_expands_all_messages() {
+        let mut overlay = transcript_overlay(vec![
+            Arc::new(UserHistoryCell {
+                message: "user".to_string(),
+                text_elements: Vec::new(),
+                local_image_paths: Vec::new(),
+                remote_image_urls: Vec::new(),
+            }),
+            Arc::new(history_cell::AgentMessageCell::new(
+                vec![Line::from("assistant")],
+                true,
+            )),
+        ]);
+
+        overlay.collapse_all_messages();
+        assert!(
+            overlay
+                .message_ids
+                .iter()
+                .flatten()
+                .all(|message| overlay.fold_state.is_collapsed(*message))
+        );
+
+        overlay.expand_all_messages();
+        assert!(
+            overlay
+                .message_ids
+                .iter()
+                .flatten()
+                .all(|message| !overlay.fold_state.is_collapsed(*message))
+        );
+    }
+
+    #[test]
+    fn transcript_overlay_treats_streamed_assistant_cells_as_one_message() {
+        let mut overlay = transcript_overlay(vec![
+            Arc::new(history_cell::AgentMessageCell::new(
+                vec![Line::from("assistant part one")],
+                true,
+            )),
+            Arc::new(history_cell::AgentMessageCell::new(
+                vec![Line::from("assistant part two")],
+                false,
+            )),
+            Arc::new(UserHistoryCell {
+                message: "next user message".to_string(),
+                text_elements: Vec::new(),
+                local_image_paths: Vec::new(),
+                remote_image_urls: Vec::new(),
+            }),
+        ]);
+
+        overlay.move_fold_selection(std::cmp::Ordering::Greater);
+        assert_eq!(overlay.fold_selection, Some(0));
+        overlay.toggle_selected_message();
+        overlay.move_fold_selection(std::cmp::Ordering::Greater);
+        assert_eq!(
+            overlay.fold_selection,
+            Some(2),
+            "selection should skip the continuation cell"
+        );
+
+        let area = Rect::new(0, 0, 80, 10);
+        let mut buf = Buffer::empty(area);
+        overlay.render(area, &mut buf);
+        let rendered = buffer_to_text(&buf, area);
+        assert_eq!(rendered.matches("Assistant message collapsed").count(), 1);
     }
 
     #[test]

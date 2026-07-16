@@ -27,6 +27,8 @@ use crate::history_cell;
 use crate::history_cell::HistoryCell;
 use crate::insert_history::HistoryLineWrapPolicy;
 use crate::terminal_hyperlinks::HyperlinkLine;
+use crate::transcript_folding::folded_message_lines;
+use crate::transcript_folding::message_ids;
 use crate::transcript_reflow::TRANSCRIPT_REFLOW_DEBOUNCE;
 use crate::tui;
 
@@ -76,8 +78,13 @@ impl App {
         cell: &dyn HistoryCell,
         width: u16,
     ) -> Vec<HyperlinkLine> {
-        let mut display =
-            cell.display_hyperlink_lines_for_mode(width, self.chat_widget.history_render_mode());
+        let message_ids = message_ids(&self.transcript_cells);
+        let fold_state = self.current_transcript_fold_state();
+        let cell_index = self.transcript_cells.len().saturating_sub(1);
+        let mut display = folded_message_lines(&message_ids, &fold_state, cell_index)
+            .unwrap_or_else(|| {
+                cell.display_hyperlink_lines_for_mode(width, self.chat_widget.history_render_mode())
+            });
         if !display.is_empty() && !cell.is_stream_continuation() {
             if self.has_emitted_history_lines {
                 display.insert(/*index*/ 0, HyperlinkLine::new(Line::from("")));
@@ -405,7 +412,7 @@ impl App {
         Ok(())
     }
 
-    pub(super) fn reflow_transcript_now(&mut self, tui: &mut tui::Tui) -> Result<u16> {
+    pub(crate) fn reflow_transcript_now(&mut self, tui: &mut tui::Tui) -> Result<u16> {
         let terminal_width = tui.terminal.size()?.width;
         let width = self.chat_widget.history_wrap_width(terminal_width);
         if self.transcript_cells.is_empty() {
@@ -471,6 +478,8 @@ impl App {
     /// so the returned rows obey the cap exactly.
     pub(super) fn render_transcript_lines_for_reflow(&mut self, width: u16) -> ReflowRenderResult {
         let row_cap = self.resize_reflow_max_rows();
+        let message_ids = message_ids(&self.transcript_cells);
+        let fold_state = self.current_transcript_fold_state();
         let mut cell_displays = VecDeque::new();
         let mut rendered_rows = 0usize;
         let mut start = self.transcript_cells.len();
@@ -478,8 +487,13 @@ impl App {
         while start > 0 {
             start -= 1;
             let cell = self.transcript_cells[start].clone();
-            let lines = cell
-                .display_hyperlink_lines_for_mode(width, self.chat_widget.history_render_mode());
+            let lines =
+                folded_message_lines(&message_ids, &fold_state, start).unwrap_or_else(|| {
+                    cell.display_hyperlink_lines_for_mode(
+                        width,
+                        self.chat_widget.history_render_mode(),
+                    )
+                });
             rendered_rows += lines.len();
             cell_displays.push_front(ReflowCellDisplay {
                 lines,
@@ -499,9 +513,13 @@ impl App {
             start -= 1;
             let cell = self.transcript_cells[start].clone();
             cell_displays.push_front(ReflowCellDisplay {
-                lines: cell.display_hyperlink_lines_for_mode(
-                    width,
-                    self.chat_widget.history_render_mode(),
+                lines: folded_message_lines(&message_ids, &fold_state, start).unwrap_or_else(
+                    || {
+                        cell.display_hyperlink_lines_for_mode(
+                            width,
+                            self.chat_widget.history_render_mode(),
+                        )
+                    },
                 ),
                 is_stream_continuation: cell.is_stream_continuation(),
             });
