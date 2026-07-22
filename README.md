@@ -14,6 +14,7 @@ the model context, stored conversation, or workspace.
 - [Chinese documentation](README.zh-CN.md)
 - [Detailed English design and verification guide](codex-rs/tui/TRANSCRIPT_FOLDING.en.md)
 - [Detailed Chinese design and verification guide](codex-rs/tui/TRANSCRIPT_FOLDING.zh-CN.md)
+- [Upstream snapshot update strategy](docs/upstream-sync.md)
 - [Upstream Codex repository](https://github.com/openai/codex)
 
 Licensed under [Apache-2.0](LICENSE). See [NOTICE](NOTICE) for attribution.

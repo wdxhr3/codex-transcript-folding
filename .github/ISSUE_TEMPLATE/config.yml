@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: General Codex bugs and requests
+    url: https://github.com/openai/codex/issues
+    about: Report behavior that is not specific to transcript folding upstream.

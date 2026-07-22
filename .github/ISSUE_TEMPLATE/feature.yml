@@ -1,0 +1,27 @@
+name: Transcript folding improvement
+description: Suggest an improvement to this fork's transcript-folding experience.
+title: "[Feature] "
+labels:
+  - enhancement
+body:
+  - type: markdown
+    attributes:
+      value: |
+        This tracker covers transcript folding in this fork. General Codex
+        feature requests belong in the upstream OpenAI Codex repository.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem or use case
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered

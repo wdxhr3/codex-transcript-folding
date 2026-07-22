@@ -1,0 +1,53 @@
+name: Transcript folding bug
+description: Report a reproducible problem in this fork's transcript-folding feature.
+title: "[Bug] "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this tracker for behavior introduced by this fork. For general Codex
+        problems, report the issue to the upstream OpenAI Codex repository.
+  - type: input
+    id: revision
+    attributes:
+      label: Fork revision
+      description: Commit SHA or branch used to build the CLI.
+    validations:
+      required: true
+  - type: input
+    id: platform
+    attributes:
+      label: Platform and terminal
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: Describe what happened and which transcript-folding action triggered it.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction steps
+      placeholder: |
+        1. Start or resume a session
+        2. Open the transcript
+        3. Fold a message
+        4. Observe ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: additional
+    attributes:
+      label: Additional context
+      description: Add logs or screenshots after removing secrets and private conversation content.
